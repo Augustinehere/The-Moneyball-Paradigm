@@ -1,0 +1,457 @@
+---
+title: " **The Moneyball Paradigm** : Crafting Football’s Most Efficient Team"
+author: "Sayak Goswami"
+date: "2024-10-24"
+output:
+  html_document: 
+    toc: true
+    toc_float: true
+    theme: yeti
+    highlight: monochrome
+---
+
+# Introduction
+
+In the world of football, success on the pitch is often **synonymous with star-studded lineups and hefty player price tags**. But what if building a **winning team wasn’t just about breaking the bank?** This project embarks on a data-driven exploration of **FIFA 2017 player stats**, challenging the conventional approach by identifying the **most cost-effective players to form a championship-worthy squad.**
+
+Leveraging the **power of R and the finesse of Linear Regression**, we’ll dive into key performance metrics— **dribbling, passing, defense, and more**—to assess their influence on a player’s market value. **Our analysis goes beyond mere numbers**, seeking to uncover patterns that balance performance with budget constraints. **The goal? To create a statistically optimized dream team, one that maximizes talent while minimizing costs, showcasing the hidden potential within the world of football economics.**
+
+This project will provide insights not only for **statisticians and data enthusiasts but also for football managers and scouts** looking to extract value from the beautiful game. By transforming **raw data into actionable intelligence**, we aim to redefine what it means to build the best team—**not just in terms of skills, but also through a financially strategic lens**. **Welcome to the future of football analytics, where statistics meets strategy, and value is redefined.**
+
+
+
+# Exploratory Data Analysis
+```{r,echo=FALSE,comment=NA}
+suppressWarnings(suppressMessages(library(dplyr)))
+suppressWarnings(suppressMessages(library(glmnet)))
+suppressWarnings(suppressMessages(library(tidyr)))
+suppressWarnings(suppressMessages(library(stringr)))
+suppressWarnings(suppressMessages(library(rms)))
+suppressWarnings(suppressMessages(library(ggplot2)))
+suppressWarnings(suppressMessages(library(rgl)))
+suppressWarnings(suppressMessages(library(car)))
+```
+
+To have a basic idea regarding the data-set we are working with, we shall look at its basic attributes
+
+```{r,echo=FALSE,comment=NA}
+df=read.csv("E:/PROJECT DATASETS/FIFA/FIFA17_official_data.csv")
+print("The basic datatypes including the name of the variables are as follows:-")
+glimpse(df)
+```
+In this project our idea is to form the most cost-effective yet high potential team using Statistics.
+
+## Data Cleaning
+Lets drop the columns not required in our Analysis i.e **“Loaned From”**
+```{r,echo=F,comment=NA}
+df$Loaned.From=NULL
+```
+We shall deal with **NULL/NA** values in this data-set constructively as possible. The variable(s) that contains **NULL / NA** values are :-
+```{r,echo=FALSE,comment=NA}
+k=which(is.na(df),arr.ind=TRUE) #Column 22?
+colnames(df)[22]
+#We choose to drop this column
+df$Jersey.Number=NULL
+```
+This column is not useful, so we choose to drop it. Hence, our data is free from NULL/NA Values. 
+
+Now in order to proceed we shall change the type of few columns : **Wage, Value and Best Position**, because they will be used in calculation and hence should go through some feature engineering to remove the unwanted parts.
+```{r,echo=FALSE,comment=NA}
+categorize_position <- function(position) {
+  if (position %in% c("CF", "LF", "RF", "LS", "RS", "ST", "LW", "RW", "LAM", "RAM")) {
+    return("Attacker")
+  } else if (position %in% c("CAM", "CM", "LCM", "RCM", "LM", "RM", "CDM", "LDM", "RDM")) {
+    return("Midfielder")
+  } else if (position %in% c("LB", "RB", "LCB", "RCB", "LWB", "RWB", "CB", "RES")) {
+    return("Defender")
+  } else if (position == "GK") {
+    return("Goalkeeper")
+  } else if (position == "SUB") {
+    return("Substitute")
+  } else {
+    return(NA)  # If no match
+  }
+}
+df$Category <- sapply(df$Best.Position, categorize_position)
+```
+We created a column **“Category"** that has 4 position, namely **“Attacker”, “Defender”, “Midfielder”, “Goalkeeper”** based on the Best.Position column.
+
+Here is the distribution of the categories :-
+```{r,echo=FALSE,comment=NA}
+table(df$Category)
+```
+For the Wage and Value column, **we need to remove the € symbol and also convert K and M with suitable multiples**.
+```{r,echo=FALSE,comment=NA}
+convert_amount <- function(x) {
+  # Remove the € sign
+  x <- str_replace(x, "€", "")
+  
+  # Check for M (millions) or K (thousands) and convert accordingly
+  if (str_detect(x, "M")) {
+    # Remove the 'M' and convert to numeric
+    numeric_value <- as.numeric(str_replace(x, "M", "")) * 1e6
+  } else if (str_detect(x, "K")) {
+    # Remove the 'K' and convert to numeric
+    numeric_value <- as.numeric(str_replace(x, "K", "")) * 1e3
+  } else {
+    # Handle cases where neither M nor K is present
+    numeric_value <- as.numeric(x)
+  }
+  
+  return(numeric_value)
+}
+
+
+Value=sapply(df$Value,convert_amount)
+Wage=sapply(df$Wage,convert_amount)
+```
+Next, we shall convert the Height and Weight columns respectively to their numeric values 
+```{r,echo=FALSE,comment=NA}
+d1=df %>% 
+  extract(Height,c("f","i"),"(\\d+)'(\\d+)",convert=TRUE,remove=FALSE) %>% 
+  transmute(Height=12*f+i)
+
+d2=df %>% 
+  extract(Weight,"Weight","(\\d+)lbs",convert=TRUE,remove=FALSE) %>% 
+  transmute(Weight)
+```
+On basic scrutiny or birds eye view of the data-set confirms that only the numerical column(both original and newly formed) are required for the analysis, rest all columns other than those and Name shall be dropped from the data-set.
+```{r,echo=FALSE,comment=NA}
+ID=df$ID
+Name=df$Name
+Category=df$Category
+num=c(15,16,17,26:59)
+dat=cbind(ID,Name,df[,num],d1,d2,Wage, Value,Category)
+df_pca=cbind(df[,num],d1,d2)
+```
+Our data is now ready for analysis, we shall begin with some visual analysis that includes basic plots and further we shall also try to check whether we can categories or form cluster based on the category column using **PCA**.
+
+## Principal Component Analysis
+Here, we shall see whether using the numerical columns only, can we cluster the data-set into the categories we just formed. 
+
+#### Workflow :-
+1. We are using 3 Principal Components.
+
+2. We shall color code the category column as :
+
+• **Attacker= “RED”**
+
+• **Midfielder= “GREEN”**
+
+• **Defender= “BLUE”**
+
+• **Goalkeeper= “PURPLE”**, This will help us to notice that whether clusters are formed if the dimension is reduced to 3.
+
+Here is the PCA Plot using 3 Components :-
+<br> 
+
+ ![3D PCA Plot](C:/Users/SAYAK/Desktop/Final/pca.png).
+<br> 
+
+ Clearly we can see that there are clusters in the data-set which synchronizes with the category column.
+ 
+ 
+# Forming the best Cost-Effective Team  
+The goal of this project is to uncover **hidden gems** in football—players who are both **undervalued and underpaid**—using a **data-driven approach**. By leveraging **linear regression models**, we aim to identify those athletes whose market value and wages **don’t reflect their true potential**, creating an opportunity to build a cost-effective dream team.
+
+• The first step involves **fitting a linear model with player market value as the target variable**, utilizing key player attributes like Overall, Potential, Attacking, and more. Through an **analysis of the residuals**, we will identify players with **negative residuals, meaning their actual market value is lower than what the model predicts—signaling undervalued players.**
+
+• Once this group of undervalued players is identified, we will apply a **second linear regression model** focusing on **player wages**. By examining the wage residuals, **we will pinpoint players who are also underpaid, based on the model's predictions.**
+
+In the end, this **dual residual analysis allows us to construct a moneyball-inspired team**, comprised of players who offer maximum performance for minimal cost, taking advantage of market inefficiencies and optimizing resources to build a winning squad.
+
+## First Linear Model with Value as the target variable 
+
+### Dimension Reduction
+The dimension of this dataset is very high, we shall choose to drop some columns which are not necessary using LASSO.
+<br>
+```{r,echo=FALSE,comment=NA}
+set.seed(2001)
+par(mfrow=c(1,1))
+y=dat$Value
+x=model.matrix(Value~.-Name-ID,data=dat)
+lasso=glmnet(x,y,alpha=1)
+cv=cv.glmnet(x,y,alpha=1)
+plot(cv)
+lasso_final=glmnet(x,y,lambda=cv$lambda.1se,alpha=1)
+m=lasso_final$beta
+fdat=dat[c("ID","Name","International.Reputation","HeadingAccuracy","Skill.Moves","Acceleration","SprintSpeed","Reactions","Aggression","Marking","GKHandling","GKReflexes","Wage","Value","Category")]
+cat("The columns retained are :", c("ID, ","Name, ","International.Reputation, ","HeadingAccuracy, ","Skill.Moves, ","Acceleration, ","SprintSpeed, ","Reactions, ","Aggression, ","Marking, ","GKHandling, ","GKReflexes, ","Wage, ","Value, ","Category"))
+fdat=fdat %>% 
+  filter(Value>0 & Wage>0)
+```
+
+### Linear Model Assumptions
+We will proceed to fit a Linear Model and hence shall check the assumptions of the Linear Model to hold as practical as possible. 
+The Assumptions are :-
+
+• **Linear Relationship**
+
+• **No Heteroscedasticity**
+
+• **Normality of residuals**
+
+• **No Collinearity**
+
+For simplicity we have assumed Linear Relationship in the structure, to check for heteroscedasticity of residuals we shall plot the residuals and search for possible patterns. 
+
+**The plot of the residual :-**
+<br> 
+```{r,echo=FALSE,comment=NA}
+par(mfrow=c(1,2))
+model=lm(Value~.-Name-ID,data=fdat)
+model1=lm(log(Value)~.-Name-ID,data=fdat)
+plot(residuals(model),ylab="Residuals from the model",main="Without any transformation")
+plot(residuals(model1),main="Post Log-Transformation")
+```
+<br> 
+Clearly we can see some patterns which doesnot form a band around 0 in the first plot. After Log\text{ }Transformation on the response we get a better structure for the residuals.
+
+Though the plot formed a band about 0, but we can clearly observe some disturbances in the initial part of x-axis. Those values might be due to the presence of **influential outliers** , we shall plot an **Influence Plot** to check and remove if those outliers are influential. 
+
+**The corresponding Influence Plot based on Cooks Distance is : -**
+<br> 
+```{r,echo=FALSE,comment=NA}
+ip=influencePlot(model1,id=list(method="noteworthy", n=80, cex=0.75,cex.lab=0.6, col=carPalette()[1], location="lr"))
+ind=as.numeric(rownames(ip))
+d=fdat[ind,]
+df2=fdat[-ind,]
+```
+<br> 
+
+The Top 10 Influential Outlier are :-
+<br> 
+```{r,echo=FALSE,comment=NA}
+d %>% 
+  select(Name, Value) %>% 
+  arrange(desc(Value)) %>% 
+  head(10)
+```
+<br> 
+I guess we know why they are **Influential and Outlier?**
+
+We shall remove the influential outliers and plot the residual plot again.
+<br> 
+```{r,echo=FALSE,comment=NA}
+model2=lm(log(Value)~.-Name-ID,data=df2)
+res=resid(model2)
+plot(res)
+```
+<br> 
+Indeed, the plot is better now as it forms a clear band about 0, hence there is no heteroscedasticity or collinearity in between the residual terms.
+
+
+Now, in this case lets check for **Normality assumption of residuals**
+**A QQPlot of residuals :-**
+<br> 
+```{r,echo=FALSE,comment=NA}
+qqnorm(res)
+qqline(res)
+```
+<br> 
+**It absolutely satisfies this condition.**
+
+Now we shall check for multicollinearity in the columns by **calculating the VIF** and putting a **threshold at 10.**
+
+**The barplot showing the VIF values :-**
+<br> 
+```{r,echo=FALSE,comment=NA}
+par(mar=c(5.1, 8, 4.1, 2.1))
+barplot(rms::vif(model2),horiz=TRUE,col="steelblue",cex.names = 0.7,las=2)
+abline(v=10)
+```
+<br> 
+**GKReflexes and GKHandling are showing high VIF values.**
+```{r,echo=FALSE,comment=NA}
+cat("The correlation between GKReflexes and GKHandling is",cor(df2$GKHandling,df2$GKReflexes))
+```
+As the correlation of them is very high we shall choose to drop one, in this case we are dropping GKReflexes as the model suggested **GKHandling to be significant but not GKReflexes.**
+
+### The Final Linear Model regarding the response variable Value 
+```{r,echo=FALSE,comment=NA}
+model3=lm(log(Value)~.-Name-ID-GKReflexes,data=df2)
+summary(model3)
+```
+we shall insert the **residuals based on this model in the data set** and **filter the data based on negative residuals** as mentioned above , this filtering will give us the **names of players who are under valued.**
+```{r,echo=FALSE,comment=NA}
+df2$residual=resid(model3)
+gems=df2 %>% 
+  filter(residual<0)
+cat("The current dataset has ",dim(gems)[1],"rows")
+gems$residual=NULL
+```
+So, we have the **data set containing under-valued players** and now proceed to **pinpoint players who are also underpaid.**
+
+In order to do so, we are going to fit another linear model but this time the response variable will be log(Wage).
+
+After fitting the model on this new dataset, we shall once again **filter the dataset based on the negative residual values like the previous case.**
+
+## Linear model considering the Wage column as response 
+```{r,echo=FALSE,comment=NA}
+model4=lm(log(Wage)~.-Name-ID-GKReflexes,data=gems)
+gems$residuals=resid(model4)
+
+hidden_gems=gems %>% 
+  filter(residuals<0)
+cat("The dataset now has",dim(hidden_gems)[1],"rows")
+```
+Hence, we have the dataset containing the list of players who are both **Undervalued and Underpaid.**
+
+From the initial dataframe we need two columns to define a metric for cost efficiency. The columns are namely : **Potential and Overall.**
+
+In order to do so , we shall merge using **LEFT JOIN**, on the **ID column** as it is **unique in nature** and proceed with the merged dataset to form some metric.
+
+```{r,echo=FALSE,comment=NA}
+final_hidden_gems=merge(hidden_gems,df[c("Overall","Potential","Best.Position","ID")],by = "ID",all.x = TRUE)
+
+```
+
+# Metric Design 
+## Basic Metric
+The cost-effectiveness metric is designed to evaluate the performance of football players relative to their cost, with the goal of identifying the most cost-effective players for building a team. The key columns required are:
+
+• **Overall**: Represents the player's current performance level.
+
+• **Potential**: Indicates the player's possible future growth or peak performance.
+
+• **Wage**: The player's weekly or yearly salary, representing the financial commitment.
+
+• **Value**: The market value or transfer fee of the player.
+
+The basic **cost-effectiveness metric** is formulated as:
+
+Cost-Effectiveness=\frac{Overall+Potenial}{Wage+Value}
+
+### Why This Metric is Useful
+
+• **Balance of Performance and Cost**: This metric helps balance the current performance (Overall) and future potential (Potential) of players against the financial investment required to acquire and retain them (Wage + Value). This is crucial for assembling a team that is both high-performing and affordable, similar to the "Moneyball" philosophy.
+
+• **Focus on Value for Money**: By using this metric, you can avoid overpaying for high-profile players who may not deliver performance proportional to their cost. Instead, you identify undervalued players who provide a higher return on investment in terms of their performance on the field. 
+
+• **Player Selection Optimization**: This metric allows for easy comparison between players of different cost and performance levels. It enables decision-making that prioritizes overall team strength while adhering to budget constraints.
+
+## Weighted Metric
+While the basic metric is valuable, it can sometimes overemphasize cheaper players who may not be good enough to contribute significantly, as you observed. To address this, we developed a **Weighted Cost-Effectiveness Metric** :
+
+Cost-Effectiveness(Weighted)=\frac{2*Overall+Potential}{Wage+Value}
+
+### Reason for the Weighted Metric
+
+• **Greater Emphasis on Current Performance**: By giving more weight to the Overall score, the metric ensures that players who can contribute immediately are prioritized. This adjustment is necessary because while potential is important, players who perform well right now are more valuable for immediate results.
+
+• **Balancing Current and Future Potential**: This refined metric still considers the future potential of players, but it ensures that the team isn't overly reliant on future prospects who may not deliver immediate value.
+
+• **Avoiding the “Cheap but Ineffective” Trap**: The weighted metric helps avoid a scenario where the cheapest players with low performance dominate the selection. It ensures that lower-cost players still meet a minimum performance standard, making it more aligned with the **"Moneyball" approach**, where the goal is to win, not just to save money.
+
+```{r,echo=FALSE,comment=NA}
+final_hidden_gems=final_hidden_gems %>% 
+  select(Name,Category,Overall,Potential,International.Reputation,Wage,Value,Best.Position)
+wcem=final_hidden_gems %>% 
+  mutate(final_hidden_gems,Cost_Effectiveness_Metric=((2*Overall+Potential)/(Wage+Value)))
+```
+After forming this metric and attaching this as a column in the merged file, we shall now split the dataset based on the **Category Column.**
+```{r,echo=FALSE,comment=NA}
+place=split(wcem,final_hidden_gems$Category)
+names(place)
+hg.attack=place$Attacker
+hg.def=place$Defender
+hg.gk=place$Goalkeeper
+hg.mid=place$Midfielder
+```
+We have 4 datasets based on 4 positions of players :** Attacker, Midfielder, Defender and Goalkeeper.**
+
+Finally in order to choose players we shall run a final filter on these datasets so that we can have players that are cheaper in cost but valuable in play. We shall filter the datasets for **Potential values >80 and Overall values >80** and the sort the dataset based on **Cost-Effectiveness_Metric column in decending order.**
+
+```{r,echo=FALSE,comment=NA}
+attack=hg.attack %>%
+  filter(Overall>80 & Potential>80) %>% 
+  arrange(desc(Cost_Effectiveness_Metric)) %>% 
+  top_n(10) %>%
+  select(Name, Overall, Potential,Best.Position)
+
+def=hg.def %>% 
+  filter(Overall>80 & Potential>80) %>% 
+  arrange(desc(Cost_Effectiveness_Metric)) %>% 
+  top_n(10) %>%
+  select(Name, Overall, Potential,Best.Position)
+
+gk=hg.gk %>% 
+  filter(Overall>80 & Potential>80) %>% 
+  arrange(desc(Cost_Effectiveness_Metric)) %>% 
+  top_n(10) %>%
+  select(Name, Overall, Potential,Best.Position)
+
+mid=hg.mid %>% 
+  filter(Overall>80 & Potential>80) %>% 
+  arrange(desc(Cost_Effectiveness_Metric)) %>% 
+  top_n(10) %>%
+  select(Name, Overall, Potential,Best.Position)
+```
+
+# The Team
+Here is the list of Potential Players that can be used to make the **Best Cost-Effective Team.**
+
+## Attackers : Top 10 Attackers 
+```{r,echo=FALSE,comment=NA}
+attack
+```
+## Midfielders : Top 10 Midfielders
+```{r,echo=FALSE,comment=NA}
+mid
+```
+## Defenders : Top 10 Defenders
+```{r,echo=FALSE,comment=NA}
+def
+```
+## Goalkeepers : Top 2 Goalkeepers
+```{r,echo=FALSE,comment=NA}
+gk
+```
+
+## One Possible choice of the Team
+According to survey the **most famous football team strategy** back in **2017** was **4-2-3-1**. This setup is **flexible**, providing **solid defense** and **midfield control**, with plenty of **attacking options.**
+
+**Team Formation:**
+
+**Goalkeeper:**
+
+• José Reina
+
+**Defenders:**
+
+• CB: Naldo 
+
+• CB: Azpilicueta 
+
+• LB: L. Baines 
+
+• RB: L. Piszczek
+
+**Defensive Midfielders:**
+
+• CDM:D. De Rossi – strong defensive midfielder to break up play
+
+• CDM:G. Medel – tough tackler and good at distributing the ball from deep
+
+**Attacking Midfielders:**
+
+• CAM: Quaresma – playmaker to provide creativity and flair in the attack
+
+• LM: W. Rooney – wide playmaker, cutting inside to take shots and create chances
+
+• RM: G. Wijnaldum – dynamic midfielder to link up with the striker and attack
+
+**Striker (ST):**
+
+• Aduriz – central striker leading the attack, good at finishing and holding the ball up
+
+### The Visual Representation of the team on the Field :
+![The Best Cost-Effective Team](C:/Users/SAYAK/Desktop/Final/lineup.png)
+
+# Conclusion
+Inspired by the iconic **"Moneyball"** approach, this project has successfully uncovered a roster of **32 players—10 attackers, 10 midfielders, 10 defenders, and 2 goalkeepers**—who offer the **best blend of performance and value**. By leveraging a **cost-effectiveness metric** that prioritizes both **immediate impact and future potential**, we've built a team that defies traditional scouting norms, proving that you don’t need to **break the bank to build a winning squad.**
+
+Much like in **"Moneyball"**, the goal wasn’t just to find stars but to assemble a team that can **deliver results while staying within financial constraints**. This data-driven strategy reveals that the path to **victory lies not in chasing high-priced talent but in identifying the right combination of skill, potential, and cost-efficiency. **
+
+**This squad is ready to win, not just on the field, but in the financial books as well—redefining what it means to be truly "cost-effective".**
+
